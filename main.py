@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stream Watchdog - Ana Baslangic Noktasi
-Tum servisler (RTMP Sunucu, Cloudflare Tunnel, Watchdog) tek pencerede calisir.
+Tum servisler (RTMP Sunucu, ngrok TCP Tunnel, Watchdog) tek pencerede calisir.
 
 Kullanim:
     python main.py
@@ -14,11 +14,10 @@ import logging
 import signal
 import threading
 import re
-import os
 from pathlib import Path
 from datetime import datetime
 
-# ─── LOG SISTEMI ────────────────────────────────────────────────────────────────
+# ─── LOG SISTEMI ────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -27,11 +26,11 @@ log_filename = LOG_DIR / f"watchdog_{datetime.now().strftime('%Y%m%d_%H%M%S')}.l
 
 class ColorFormatter(logging.Formatter):
     COLORS = {
-        logging.DEBUG:    "\033[36m",   # Cyan
-        logging.INFO:     "\033[32m",   # Yesil
-        logging.WARNING:  "\033[33m",   # Sari
-        logging.ERROR:    "\033[31m",   # Kirmizi
-        logging.CRITICAL: "\033[35m",   # Mor
+        logging.DEBUG:    "\033[36m",
+        logging.INFO:     "\033[32m",
+        logging.WARNING:  "\033[33m",
+        logging.ERROR:    "\033[31m",
+        logging.CRITICAL: "\033[35m",
     }
     RESET = "\033[0m"
     BOLD  = "\033[1m"
@@ -42,34 +41,30 @@ class ColorFormatter(logging.Formatter):
         record.name      = f"\033[37m{record.name}{self.RESET}"
         return super().format(record)
 
-FMT = "%(asctime)s [%(levelname)s] %(name)s » %(message)s"
+FMT      = "%(asctime)s [%(levelname)s] %(name)s » %(message)s"
 DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
-# Konsol handler - renkli
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(ColorFormatter(FMT, datefmt=DATE_FMT))
 
-# Dosya handler - renksiz
 file_handler = logging.FileHandler(log_filename, encoding="utf-8")
 file_handler.setFormatter(logging.Formatter(FMT, datefmt=DATE_FMT))
 
 logging.basicConfig(level=logging.DEBUG, handlers=[console_handler, file_handler])
 log = logging.getLogger("Main")
 
-# ─── YAPILANDIRMA ────────────────────────────────────────────────────────────────
+# ─── YAPILANDIRMA ───────────────────────────────────────────────────────────
 CONFIG = {
-    # Kamera RTMP giris adresi
-    "camera_url":     "rtmp://localhost:1935/live/camera",
+    # Kamera RTMP giris adresi (ngrok uzerinden gelecek)
+    # Bu adres ngrok basladiktan sonra otomatik guncellenir
+    "camera_url": "rtmp://localhost:1935/live/camera",
 
     # LOCAL MODE:
-    #   True  → FFmpeg ciktisi localhost'a yazar, Cloudflare uzerinden disariya acar
-    #            Kameranin RTMP push adresi: rtmp://<cloudflare_host>:1935/live/camera
-    #   False → Dogrudan Twitch/YouTube'a yayinlar (streamlabs_url gerekli)
+    #   True  → FFmpeg ciktisi localhost'a yazar, Streamlabs Media Source ile izlenir
+    #   False → Dogrudan Twitch/YouTube'a yayinlar (output_url gerekli)
     "local_mode": True,
 
     # Harici platform URL (local_mode=False ise doldur)
-    # Twitch  : rtmp://live.twitch.tv/app/YOUR_STREAM_KEY
-    # YouTube : rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY
     "output_url": "rtmp://live.twitch.tv/app/<YOUR_STREAM_KEY_HERE>",
 
     # Kamera baglantisi kopunca gosterilecek fallback gorsel
@@ -85,11 +80,11 @@ CONFIG = {
     "video_bitrate": "4000k",
     "audio_bitrate": "128k",
 }
-# ─────────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 
 class ManagedProcess:
-    """Alt surec yoneticisi — baslatma, durdurma, yeniden baslatma."""
+    """Alt surec yoneticisi."""
 
     def __init__(self, name: str, log_tag: str = None):
         self.name    = name
@@ -121,7 +116,7 @@ class ManagedProcess:
         return self._proc.pid if self._proc else None
 
 
-# ─── RTMP SUNUCU ─────────────────────────────────────────────────────────────────
+# ─── RTMP SUNUCU ────────────────────────────────────────────────────────────
 class RTMPServer:
     """Node.js node-media-server sureci."""
 
@@ -145,20 +140,22 @@ class RTMPServer:
         return self._proc.is_running()
 
 
-# ─── CLOUDFLARE TUNNEL ───────────────────────────────────────────────────────────
-class CloudflareTunnel:
-    """cloudflared tunnel sureci — URL'yi log satirindan yakalar."""
+# ─── NGROK TCP TUNNEL ───────────────────────────────────────────────────────
+class NgrokTunnel:
+    """ngrok TCP tunnel sureci — RTMP icin gercek TCP destegi saglar."""
 
-    def __init__(self):
+    def __init__(self, port: int = 1935):
+        self._port   = port
         self._proc   = None
-        self._url    = None
-        self._logger = logging.getLogger("Cloudflare")
+        self._host   = None
+        self._tport  = None
+        self._logger = logging.getLogger("ngrok")
         self._ready  = threading.Event()
 
     def start(self):
-        self._logger.info("Tunnel baslatiliyor (tcp://localhost:1935)...")
+        self._logger.info(f"ngrok TCP tunnel baslatiliyor (port {self._port})...")
         self._proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "tcp://localhost:1935"],
+            ["ngrok", "tcp", str(self._port), "--log", "stdout", "--log-format", "logfmt"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -168,38 +165,38 @@ class CloudflareTunnel:
         t.start()
 
     def _read_output(self):
-        """Cloudflare cikti satirlarini okur, trycloudflare URL'sini yakalar."""
+        """ngrok cikti satirlarini okur, tunnel adresini yakalar."""
         for line in self._proc.stdout:
             line = line.rstrip()
             if not line:
                 continue
             self._logger.debug(line)
 
-            # URL satirini yakala: https://xxxx.trycloudflare.com
-            match = re.search(r'https://([\w-]+\.trycloudflare\.com)', line)
-            if match and not self._url:
-                host = match.group(1)
-                self._url = f"rtmp://{host}:1935/live/camera"
+            # ngrok logfmt formatinda url=tcp://X.tcp.ngrok.io:PORT satirini yakala
+            match = re.search(r'url=tcp://([\w.\-]+):(\d+)', line)
+            if match and not self._host:
+                self._host  = match.group(1)
+                self._tport = match.group(2)
                 self._ready.set()
-                self._logger.info("=" * 55)
-                self._logger.info(f"  Tunnel hazir!")
-                self._logger.info(f"  HTTPS : https://{host}")
-                self._logger.info(f"  RTMP  : {self._url}")
-                self._logger.info(f"  Kamera RTMP push adresi:")
-                self._logger.info(f"  >>> {self._url} <<<")
-                self._logger.info("=" * 55)
+                rtmp = f"rtmp://{self._host}:{self._tport}/live/camera"
+                self._logger.info("=" * 60)
+                self._logger.info("  ngrok TCP Tunnel HAZIR!")
+                self._logger.info(f"  TCP   : tcp://{self._host}:{self._tport}")
+                self._logger.info(f"  RTMP  : {rtmp}")
+                self._logger.info(f"  Kamerana su adresi gir:")
+                self._logger.info(f"  >>> {rtmp} <<<")
+                self._logger.info("=" * 60)
 
     def wait_for_url(self, timeout: int = 30) -> str | None:
-        """URL hazir olana kadar bekler."""
-        self._logger.info(f"Cloudflare URL bekleniyor (max {timeout}s)...")
+        self._logger.info(f"ngrok tunnel URL bekleniyor (max {timeout}s)...")
         if self._ready.wait(timeout=timeout):
-            return self._url
-        self._logger.error("Cloudflare URL zamaninda alinamadi!")
+            return f"rtmp://{self._host}:{self._tport}/live/camera"
+        self._logger.error("ngrok URL zamaninda alinamadi! Token dogru mu?")
         return None
 
     def stop(self):
         if self._proc and self._proc.poll() is None:
-            self._logger.info("Tunnel kapatiliyor...")
+            self._logger.info("ngrok tunnel kapatiliyor...")
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)
@@ -211,12 +208,14 @@ class CloudflareTunnel:
 
     @property
     def rtmp_url(self) -> str | None:
-        return self._url
+        if self._host and self._tport:
+            return f"rtmp://{self._host}:{self._tport}/live/camera"
+        return None
 
 
-# ─── WATCHDOG ─────────────────────────────────────────────────────────────────────
+# ─── WATCHDOG ───────────────────────────────────────────────────────────────
 class Watchdog:
-    """Kamera RTMP akisini izler, canliya veya fallback'e gececer."""
+    """Kamera RTMP akisini izler, canliya veya fallback'e gecer."""
 
     def __init__(self, cfg: dict):
         self.cfg         = cfg
@@ -230,6 +229,11 @@ class Watchdog:
         self._online   = False
         self._stop     = threading.Event()
         self._logger   = logging.getLogger("Watchdog")
+
+    def update_camera_url(self, url: str):
+        """ngrok adresi alindiktan sonra kamera URL'sini guncelle."""
+        self.cfg["camera_url"] = url
+        self._logger.info(f"Kamera URL guncellendi: {url}")
 
     def _probe(self) -> bool:
         try:
@@ -262,7 +266,7 @@ class Watchdog:
         if img.exists():
             vin = ["-loop", "1", "-framerate", str(c["fps"]), "-i", str(img)]
         else:
-            self._logger.warning(f"'{img}' bulunamadi — siyah ekran")
+            self._logger.warning(f"'{img}' bulunamadi — siyah ekran kullaniliyor")
             vin = ["-f", "lavfi", "-i",
                    f"color=c=black:s={c['width']}x{c['height']}:r={c['fps']}"]
         return [
@@ -319,28 +323,27 @@ class Watchdog:
             except KeyboardInterrupt:
                 break
 
-        self._logger.info("Durdurluyor...")
+        self._logger.info("Durduruluyor...")
         self._live.stop()
         self._fallback.stop()
         self._logger.info("Temiz cikis.")
 
 
-# ─── ANA PROGRAM ─────────────────────────────────────────────────────────────────
+# ─── ANA PROGRAM ────────────────────────────────────────────────────────────
 def check_dependencies():
-    """Gerekli araclarin kurulu olup olmadigini kontrol et."""
     deps = {
-        "node":        "https://nodejs.org",
-        "cloudflared": "https://github.com/cloudflare/cloudflared/releases",
-        "ffmpeg":      "https://ffmpeg.org/download.html",
-        "ffprobe":     "https://ffmpeg.org/download.html (ffmpeg ile birlikte gelir)",
+        "node":   "https://nodejs.org",
+        "ngrok":  "https://ngrok.com/download",
+        "ffmpeg": "https://ffmpeg.org/download.html",
+        "ffprobe":"https://ffmpeg.org/download.html",
     }
     ok = True
     for tool, url in deps.items():
-        result = subprocess.run(
+        r = subprocess.run(
             ["where" if sys.platform == "win32" else "which", tool],
             capture_output=True
         )
-        if result.returncode != 0:
+        if r.returncode != 0:
             log.error(f"'{tool}' bulunamadi! Yukle: {url}")
             ok = False
         else:
@@ -351,7 +354,7 @@ def check_dependencies():
 def print_banner():
     print()
     print("\033[1;36m" + "=" * 60)
-    print("   Stream Watchdog v2.0  —  Tek Pencere Modu")
+    print("   Stream Watchdog v2.1  —  ngrok TCP Modu")
     print("=" * 60 + "\033[0m")
     print(f"   Log dosyasi: {log_filename}")
     print("=" * 60)
@@ -366,16 +369,14 @@ def main():
         log.critical("Eksik bagimliliklar var. Lutfen yukleyip tekrar deneyin.")
         sys.exit(1)
 
-    # local_mode=False ise stream key kontrolu
     if not CONFIG.get("local_mode") and "<YOUR_STREAM_KEY_HERE>" in CONFIG["output_url"]:
         log.error("main.py icindeki 'output_url' ayarina stream key'ini gir!")
         sys.exit(1)
 
-    rtmp      = RTMPServer()
-    tunnel    = CloudflareTunnel()
-    watchdog  = Watchdog(CONFIG)
+    rtmp     = RTMPServer()
+    tunnel   = NgrokTunnel(port=1935)
+    watchdog = Watchdog(CONFIG)
 
-    # Temiz cikis icin signal handler
     def shutdown(sig, frame):
         log.info("Kapatma sinyali alindi...")
         watchdog.request_stop()
@@ -392,21 +393,23 @@ def main():
     rtmp.start()
     time.sleep(2)
 
-    # 2. Cloudflare Tunnel
-    log.info("[2/3] Cloudflare Tunnel baslatiliyor...")
+    # 2. ngrok TCP Tunnel
+    log.info("[2/3] ngrok TCP Tunnel baslatiliyor...")
     tunnel.start()
-    cf_url = tunnel.wait_for_url(timeout=30)
-    if cf_url:
-        log.info(f"Kamera RTMP push adresi (kamerana bu adresi gir):")
-        log.info(f">>> {cf_url} <<<")
+    ngrok_url = tunnel.wait_for_url(timeout=30)
+
+    if ngrok_url:
+        # Kamera URL'sini ngrok adresiyle guncelle
+        watchdog.update_camera_url(ngrok_url)
+        log.info(f"Kamerana su RTMP adresini gir:")
+        log.info(f">>> {ngrok_url} <<<")
     else:
-        log.warning("Cloudflare URL alinamadi, devam ediliyor...")
+        log.warning("ngrok URL alinamadi. Kamera localhost uzerinden denenecek.")
 
     # 3. Watchdog
     log.info("[3/3] Watchdog baslatiliyor...")
-    watchdog.run()  # Bloklayici — CTRL+C ile durur
+    watchdog.run()
 
-    # Cikis
     tunnel.stop()
     rtmp.stop()
     log.info("Tum servisler durduruldu.")
