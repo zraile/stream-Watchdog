@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stream Watchdog - Ana Baslangic Noktasi
-Tum servisler (RTMP Sunucu, ngrok TCP Tunnel, Watchdog) tek pencerede calisir.
+Tum servisler (RTMP Sunucu, playit.gg TCP Tunnel, Watchdog) tek pencerede calisir.
 
 Kullanim:
     python main.py
@@ -55,12 +55,11 @@ log = logging.getLogger("Main")
 
 # ─── YAPILANDIRMA ───────────────────────────────────────────────────────────
 CONFIG = {
-    # Kamera RTMP giris adresi (ngrok uzerinden gelecek)
-    # Bu adres ngrok basladiktan sonra otomatik guncellenir
+    # Kamera RTMP giris adresi — playit.gg tunnel adresiyle otomatik guncellenir
     "camera_url": "rtmp://localhost:1935/live/camera",
 
     # LOCAL MODE:
-    #   True  → FFmpeg ciktisi localhost'a yazar, Streamlabs Media Source ile izlenir
+    #   True  → Streamlabs/OBS Media Source ile izlenir (rtmp://localhost:1935/live/output)
     #   False → Dogrudan Twitch/YouTube'a yayinlar (output_url gerekli)
     "local_mode": True,
 
@@ -79,6 +78,10 @@ CONFIG = {
     "fps":           30,
     "video_bitrate": "4000k",
     "audio_bitrate": "128k",
+
+    # playit.gg agent yolu (PATH'te yoksa tam yol ver)
+    # Ornek: "C:/Users/AIPRON/Downloads/playit-windows-x86_64.exe"
+    "playit_exe": "playit",
 }
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -140,63 +143,109 @@ class RTMPServer:
         return self._proc.is_running()
 
 
-# ─── NGROK TCP TUNNEL ───────────────────────────────────────────────────────
-class NgrokTunnel:
-    """ngrok TCP tunnel sureci — RTMP icin gercek TCP destegi saglar."""
+# ─── PLAYIT.GG TCP TUNNEL ───────────────────────────────────────────────────
+class PlayitTunnel:
+    """
+    playit.gg agent sureci.
+    Agent calisinca konsola tunnel adresini yazar.
+    Ornek cikti satirlari:
+      - 'tcp://xxx.ply.gg:1935'
+      - 'Allocated address: xxx.ply.gg:1935'
+      - 'agent address xxx.ply.gg:PORT'
+      - 'tcp tunnel ... xxx.ply.gg:PORT'
+    """
 
-    def __init__(self, port: int = 1935):
-        self._port   = port
+    # playit.gg ciktisindan host:port yakalamak icin genis regex listesi
+    _PATTERNS = [
+        r'([\w\-]+\.ply\.gg):(\d+)',          # xxx.ply.gg:PORT
+        r'([\w\-]+\.playit\.gg):(\d+)',        # xxx.playit.gg:PORT
+        r'tcp://([^:\s]+):(\d+)',              # tcp://host:PORT
+        r'address[:\s]+([^:\s]+):(\d+)',       # address: host:PORT
+        r'allocated[^\n]*?([^:\s/]+):(\d+)',   # Allocated ... host:PORT
+    ]
+
+    def __init__(self, exe: str = "playit"):
+        self._exe    = exe
         self._proc   = None
         self._host   = None
-        self._tport  = None
-        self._logger = logging.getLogger("ngrok")
+        self._port   = None
+        self._logger = logging.getLogger("playit")
         self._ready  = threading.Event()
 
     def start(self):
-        self._logger.info(f"ngrok TCP tunnel baslatiliyor (port {self._port})...")
-        self._proc = subprocess.Popen(
-            ["ngrok", "tcp", str(self._port), "--log", "stdout", "--log-format", "logfmt"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
+        self._logger.info("playit.gg agent baslatiliyor...")
+        self._logger.info("  (ilk calismada tarayici acilabilir — hesap bagla ve devam et)")
+        try:
+            self._proc = subprocess.Popen(
+                [self._exe],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError:
+            self._logger.error(
+                f"playit.gg bulunamadi! '{self._exe}' PATH'te yok.\n"
+                "  Indirin: https://playit.gg/download\n"
+                "  Sonra main.py icindeki 'playit_exe' degerini tam yol olarak girin.\n"
+                "  Ornek: C:/Users/AIPRON/Downloads/playit-windows-x86_64.exe"
+            )
+            sys.exit(1)
         t = threading.Thread(target=self._read_output, daemon=True)
         t.start()
 
     def _read_output(self):
-        """ngrok cikti satirlarini okur, tunnel adresini yakalar."""
+        """playit cikti satirlarini okur, tunnel adresini yakalar."""
         for line in self._proc.stdout:
             line = line.rstrip()
             if not line:
                 continue
+
+            # Her satiri logla (DEBUG seviyesinde)
             self._logger.debug(line)
 
-            # ngrok logfmt formatinda url=tcp://X.tcp.ngrok.io:PORT satirini yakala
-            match = re.search(r'url=tcp://([\w.\-]+):(\d+)', line)
-            if match and not self._host:
-                self._host  = match.group(1)
-                self._tport = match.group(2)
-                self._ready.set()
-                rtmp = f"rtmp://{self._host}:{self._tport}/live/camera"
-                self._logger.info("=" * 60)
-                self._logger.info("  ngrok TCP Tunnel HAZIR!")
-                self._logger.info(f"  TCP   : tcp://{self._host}:{self._tport}")
-                self._logger.info(f"  RTMP  : {rtmp}")
-                self._logger.info(f"  Kamerana su adresi gir:")
-                self._logger.info(f"  >>> {rtmp} <<<")
-                self._logger.info("=" * 60)
+            # Onemli satirlari INFO seviyesinde goster
+            low = line.lower()
+            if any(k in low for k in ("tunnel", "address", "allocated", "ply.gg", "playit.gg", "tcp", "connected")):
+                self._logger.info(f"[playit] {line}")
 
-    def wait_for_url(self, timeout: int = 30) -> str | None:
-        self._logger.info(f"ngrok tunnel URL bekleniyor (max {timeout}s)...")
+            # Tunnel adresini yakala
+            if not self._host:
+                for pattern in self._PATTERNS:
+                    m = re.search(pattern, line, re.IGNORECASE)
+                    if m:
+                        host = m.group(1)
+                        port = m.group(2)
+                        # Sadece 1935 portunu veya herhangi bir portu kabul et
+                        self._host = host
+                        self._port = port
+                        self._ready.set()
+                        rtmp = f"rtmp://{host}:{port}/live/camera"
+                        self._logger.info("=" * 60)
+                        self._logger.info("  playit.gg TCP Tunnel HAZIR!")
+                        self._logger.info(f"  Host  : {host}:{port}")
+                        self._logger.info(f"  RTMP  : {rtmp}")
+                        self._logger.info(f"  Kamerana su adresi gir:")
+                        self._logger.info(f"  >>> {rtmp} <<<")
+                        self._logger.info("=" * 60)
+                        break
+
+    def wait_for_url(self, timeout: int = 60) -> str | None:
+        """Tunnel URL hazir olana kadar bekler."""
+        self._logger.info(f"playit.gg tunnel bekleniyor (max {timeout}s)...")
+        self._logger.info("  Tarayici acildiysa hesabinla giris yap ve TCP tunnel olustur (port: 1935)")
         if self._ready.wait(timeout=timeout):
-            return f"rtmp://{self._host}:{self._tport}/live/camera"
-        self._logger.error("ngrok URL zamaninda alinamadi! Token dogru mu?")
+            return f"rtmp://{self._host}:{self._port}/live/camera"
+        self._logger.warning(
+            "playit.gg tunnel adresi otomatik alinamadi.\n"
+            "  playit.gg arayuzunden TCP tunnel olusturup RTMP adresini elle gir.\n"
+            "  Format: rtmp://xxx.ply.gg:PORT/live/camera"
+        )
         return None
 
     def stop(self):
         if self._proc and self._proc.poll() is None:
-            self._logger.info("ngrok tunnel kapatiliyor...")
+            self._logger.info("playit.gg agent kapatiliyor...")
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)
@@ -208,8 +257,8 @@ class NgrokTunnel:
 
     @property
     def rtmp_url(self) -> str | None:
-        if self._host and self._tport:
-            return f"rtmp://{self._host}:{self._tport}/live/camera"
+        if self._host and self._port:
+            return f"rtmp://{self._host}:{self._port}/live/camera"
         return None
 
 
@@ -231,7 +280,7 @@ class Watchdog:
         self._logger   = logging.getLogger("Watchdog")
 
     def update_camera_url(self, url: str):
-        """ngrok adresi alindiktan sonra kamera URL'sini guncelle."""
+        """Tunnel adresi alindiktan sonra kamera URL'sini guncelle."""
         self.cfg["camera_url"] = url
         self._logger.info(f"Kamera URL guncellendi: {url}")
 
@@ -332,10 +381,9 @@ class Watchdog:
 # ─── ANA PROGRAM ────────────────────────────────────────────────────────────
 def check_dependencies():
     deps = {
-        "node":   "https://nodejs.org",
-        "ngrok":  "https://ngrok.com/download",
-        "ffmpeg": "https://ffmpeg.org/download.html",
-        "ffprobe":"https://ffmpeg.org/download.html",
+        "node":    "https://nodejs.org",
+        "ffmpeg":  "https://ffmpeg.org/download.html",
+        "ffprobe": "https://ffmpeg.org/download.html",
     }
     ok = True
     for tool, url in deps.items():
@@ -354,7 +402,7 @@ def check_dependencies():
 def print_banner():
     print()
     print("\033[1;36m" + "=" * 60)
-    print("   Stream Watchdog v2.1  —  ngrok TCP Modu")
+    print("   Stream Watchdog v2.2  —  playit.gg TCP Modu")
     print("=" * 60 + "\033[0m")
     print(f"   Log dosyasi: {log_filename}")
     print("=" * 60)
@@ -374,7 +422,7 @@ def main():
         sys.exit(1)
 
     rtmp     = RTMPServer()
-    tunnel   = NgrokTunnel(port=1935)
+    tunnel   = PlayitTunnel(exe=CONFIG["playit_exe"])
     watchdog = Watchdog(CONFIG)
 
     def shutdown(sig, frame):
@@ -393,18 +441,17 @@ def main():
     rtmp.start()
     time.sleep(2)
 
-    # 2. ngrok TCP Tunnel
-    log.info("[2/3] ngrok TCP Tunnel baslatiliyor...")
+    # 2. playit.gg Tunnel
+    log.info("[2/3] playit.gg TCP Tunnel baslatiliyor...")
     tunnel.start()
-    ngrok_url = tunnel.wait_for_url(timeout=30)
+    playit_url = tunnel.wait_for_url(timeout=60)
 
-    if ngrok_url:
-        # Kamera URL'sini ngrok adresiyle guncelle
-        watchdog.update_camera_url(ngrok_url)
+    if playit_url:
+        watchdog.update_camera_url(playit_url)
         log.info(f"Kamerana su RTMP adresini gir:")
-        log.info(f">>> {ngrok_url} <<<")
+        log.info(f">>> {playit_url} <<<")
     else:
-        log.warning("ngrok URL alinamadi. Kamera localhost uzerinden denenecek.")
+        log.warning("Tunnel adresi alinamadi, localhost ile devam ediliyor...")
 
     # 3. Watchdog
     log.info("[3/3] Watchdog baslatiliyor...")
