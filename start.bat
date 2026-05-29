@@ -24,36 +24,51 @@ if %ERRORLEVEL% NEQ 0 (
     pause & exit /b 1
 )
 
-:: logs klasoru olustur
-if not exist "%~dp0logs" mkdir "%~dp0logs"
-
-:: 1. RTMP Sunucu - arka planda, log dosyasina yaz
+:: 1. RTMP Sunucu - minimize pencerede baslat
 echo [1/3] RTMP Sunucu baslatiliyor...
-start /b "" node "%~dp0rtmp-server.js" > "%~dp0logs\rtmp.log" 2>&1
+start /min "RTMP Server" cmd /c "cd /d "%~dp0" && node rtmp-server.js"
 timeout /t 3 /nobreak >nul
 
-:: 2. Cloudflare Tunnel - arka planda, log dosyasina yaz
+:: 2. Cloudflare Tunnel - minimize pencerede baslat, URL'yi yakala
 echo [2/3] Cloudflare Tunnel baslatiliyor...
-start /b "" cloudflared tunnel --url tcp://localhost:1935 > "%~dp0logs\cloudflare.log" 2>&1
-echo       Cloudflare adresi: logs\cloudflare.log dosyasinda goruntulenir
-timeout /t 5 /nobreak >nul
+if not exist "%~dp0logs" mkdir "%~dp0logs"
+start /min "Cloudflare Tunnel" cmd /c "cloudflared tunnel --url tcp://localhost:1935 > "%~dp0logs\cloudflare.log" 2>&1"
 
-:: Cloudflare adresini logdan bul ve goster
+:: URL gelene kadar bekle (max 20 saniye)
+echo       Cloudflare URL bekleniyor...
+set CF_URL=
+for /l %%i in (1,1,20) do (
+    timeout /t 1 /nobreak >nul
+    for /f "tokens=*" %%a in ('findstr /i "trycloudflare.com" "%~dp0logs\cloudflare.log" 2^>nul') do (
+        set CF_LINE=%%a
+    )
+    if defined CF_LINE goto :found
+)
+
+:found
 echo.
-echo --- Cloudflare Tunnel Adresi ---
-findstr /i "trycloudflare.com" "%~dp0logs\cloudflare.log" 2>nul
-echo --------------------------------
-echo RTMP adresiniz: rtmp://[YUKARDAKI_ADRES]:1935/live/camera
+echo ============================================
+for /f "tokens=*" %%a in ('findstr /i "trycloudflare.com" "%~dp0logs\cloudflare.log" 2^>nul') do (
+    echo   Cloudflare: %%a
+)
+echo.
+echo   RTMP Adresiniz (Media Source icin kopyalayin):
+for /f "tokens=2 delims=|" %%a in ('findstr /i "trycloudflare.com" "%~dp0logs\cloudflare.log" 2^>nul') do (
+    set HOST=%%a
+)
+for /f "tokens=*" %%h in ('findstr /i "trycloudflare.com" "%~dp0logs\cloudflare.log" 2^>nul ^| findstr /i "https://"') do (
+    for /f "tokens=2 delims=/" %%d in ("%%h") do (
+        echo   rtmp://%%d:1935/live/camera
+    )
+)
+echo ============================================
 echo.
 
-:: 3. Watchdog - on planda calistir (tum log bu pencerede gorunur)
-echo [3/3] Watchdog baslatiliyor...
-echo ============================================
-echo   Kapatmak icin CTRL+C
-echo ============================================
+:: 3. Watchdog - bu pencerede on planda calistir
+echo [3/3] Watchdog baslatiliyor... (CTRL+C ile durdurulur)
 echo.
 python "%~dp0watchdog.py"
 
 echo.
-echo Tum servisler durduruldu.
+echo Watchdog durduruldu. Diger servisler hala calisiyor olabilir.
 pause
