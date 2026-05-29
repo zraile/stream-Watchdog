@@ -1,0 +1,14 @@
+{
+  "name": "stream-watchdog",
+  "version": "1.0.0",
+  "description": "Osmo Pocket 3 RTMP stream watchdog with fallback for Streamlabs",
+  "main": "rtmp-server.js",
+  "scripts": {
+    "start": "node rtmp-server.js"
+  },
+  "dependencies": {
+    "node-media-server": "^2.6.2"
+  },
+  "author": "",
+  "license": "MIT"
+}

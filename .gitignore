@@ -1,0 +1,12 @@
+# Oluşturulan dosyalar
+fallback.jpg
+
+# Node.js bağımlılıkları
+node_modules/
+
+# Python önbellek
+__pycache__/
+*.pyc
+
+# Log dosyaları
+*.log
