@@ -17,10 +17,15 @@ CONFIG = {
     # Ev PC'deki RTMP sunucudan gelen kamera görüntüsü
     "camera_url":     "rtmp://localhost:1935/live/camera",
 
-    # Streamlabs RTMP adresi ve stream key
+    # LOCAL MODE: True → Streamlabs/OBS'de Media Source olarak kullanmak için
+    #   Çıkış: rtmp://localhost:1935/live/output adresine yayın yapılır
+    #   Streamlabs'ta Media Source URL: rtmp://localhost:1935/live/output
+    # False → Twitch/YouTube gibi harici platforma yayın yapar (streamlabs_url gerekli)
+    "local_mode": True,
+
+    # Streamlabs RTMP adresi ve stream key (local_mode=False ise doldur)
     # Twitch için: rtmp://live.twitch.tv/app/YOUR_STREAM_KEY
     # YouTube için: rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY
-    # YOUR_STREAM_KEY yerine kendi stream key'ini gir
     "streamlabs_url": "rtmp://live.twitch.tv/app/<YOUR_STREAM_KEY_HERE>",
 
     # Bağlantı kopunca gösterilecek fallback görsel
@@ -73,10 +78,15 @@ class StreamProcess:
 
 
 class Watchdog:
-    """RTMP kamera bağlantısını izler ve Streamlabs'e sürekli yayın yapar."""
+    """RTMP kamera bağlantısını izler ve çıkışa sürekli yayın yapar."""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
+        self._output_url = (
+            "rtmp://localhost:1935/live/output"
+            if cfg.get("local_mode")
+            else cfg["streamlabs_url"]
+        )
         self._live = StreamProcess("Canlı Yayın")
         self._fallback_proc = StreamProcess("Fallback")
         self._camera_online = False
@@ -101,7 +111,7 @@ class Watchdog:
             return False
 
     def _live_cmd(self) -> list:
-        """Canlı kamera yayınını Streamlabs'e aktaran FFmpeg komutu."""
+        """Canlı kamera yayınını çıkışa aktaran FFmpeg komutu."""
         cfg = self.cfg
         return [
             "ffmpeg", "-y",
@@ -115,11 +125,11 @@ class Watchdog:
             "-c:a", "aac",
             "-b:a", cfg["audio_bitrate"],
             "-f", "flv",
-            cfg["streamlabs_url"],
+            self._output_url,
         ]
 
     def _fallback_cmd(self) -> list:
-        """Fallback görselini Streamlabs'e gönderen FFmpeg komutu."""
+        """Fallback görselini çıkışa gönderen FFmpeg komutu."""
         cfg = self.cfg
         if Path(cfg["fallback_image"]).exists():
             video_input = [
@@ -146,7 +156,7 @@ class Watchdog:
             "-c:a", "aac",
             "-b:a", "64k",
             "-f", "flv",
-            cfg["streamlabs_url"],
+            self._output_url,
         ]
 
     def _switch_to_live(self):
@@ -181,7 +191,9 @@ class Watchdog:
     def run(self):
         log.info("🚀 Watchdog başlatıldı")
         log.info(f"   Kamera  : {self.cfg['camera_url']}")
-        log.info(f"   Çıkış   : {self.cfg['streamlabs_url']}")
+        log.info(f"   Çıkış   : {self._output_url}")
+        if self.cfg.get("local_mode"):
+            log.info("   Mod     : LOCAL — Streamlabs Media Source URL: rtmp://localhost:1935/live/output")
         log.info("Kamera bağlantısı bekleniyor, fallback ekranı yayında...")
         self._fallback_proc.start(self._fallback_cmd())
 
@@ -205,8 +217,8 @@ class Watchdog:
 def main():
     wd = Watchdog(CONFIG)
 
-    # Placeholder stream key kontrolü
-    if "<YOUR_STREAM_KEY_HERE>" in CONFIG["streamlabs_url"]:
+    # local_mode kapalıysa stream key kontrolü yap
+    if not CONFIG.get("local_mode") and "<YOUR_STREAM_KEY_HERE>" in CONFIG["streamlabs_url"]:
         log.error("❌ watchdog.py içindeki 'streamlabs_url' ayarına kendi stream key'ini girmeyi unutma!")
         sys.exit(1)
 
