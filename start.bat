@@ -7,7 +7,7 @@ echo.
 :: cloudflared kurulu mu kontrol et
 where cloudflared >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [HATA] cloudflared bulunamadi. Lutfen yükleyin:
+    echo [HATA] cloudflared bulunamadi. Lutfen yukleyin:
     echo   https://github.com/cloudflare/cloudflared/releases
     pause
     exit /b 1
@@ -15,7 +15,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 :: 1. RTMP Sunucuyu başlat
 echo [1/3] RTMP Sunucu baslatiliyor...
-start "RTMP Server" cmd /k "node rtmp-server.js"
+start "RTMP Server" cmd /k "cd /d "%~dp0" && node rtmp-server.js"
 timeout /t 3 /nobreak >nul
 
 :: 2. Cloudflare Tunnel başlat (localhost:1935 → dışarıya açar)
@@ -25,7 +25,7 @@ timeout /t 3 /nobreak >nul
 
 :: 3. Watchdog'u başlat
 echo [3/3] Watchdog baslatiliyor...
-start "Watchdog" cmd /k "python watchdog.py"
+start "Watchdog" cmd /k "cd /d "%~dp0" && python watchdog.py"
 
 echo.
 echo Tum servisler baslatildi!
