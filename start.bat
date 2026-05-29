@@ -1,4 +1,6 @@
 @echo off
+cd /d "%~dp0"
+title Stream Watchdog
 echo ============================================
 echo   Stream Watchdog - Baslatiliyor
 echo ============================================
@@ -13,24 +15,54 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: 1. RTMP Sunucuyu başlat
+:: node kurulu mu kontrol et
+where node >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [HATA] Node.js bulunamadi. Lutfen yukleyin:
+    echo   https://nodejs.org
+    pause
+    exit /b 1
+)
+
+:: python kurulu mu kontrol et
+where python >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [HATA] Python bulunamadi. Lutfen yukleyin:
+    echo   https://python.org
+    pause
+    exit /b 1
+)
+
 echo [1/3] RTMP Sunucu baslatiliyor...
-start "RTMP Server" cmd /k "cd /d "%~dp0" && node rtmp-server.js"
+start /b "" node "%~dp0rtmp-server.js" >> "%~dp0logs\rtmp.log" 2>&1
+
 timeout /t 3 /nobreak >nul
 
-:: 2. Cloudflare Tunnel başlat (localhost:1935 → dışarıya açar)
 echo [2/3] Cloudflare Tunnel baslatiliyor...
-start "Cloudflare Tunnel" cmd /k "cloudflared tunnel --url tcp://localhost:1935"
+start /b "" cloudflared tunnel --url tcp://localhost:1935 2>&1 | "%SystemRoot%\System32\findstr" /v "^$" | powershell -NoProfile -Command ^
+  "$input | ForEach-Object { $line = $_; if ($line -match 'trycloudflare\.com') { Write-Host \"[CLOUDFLARE] $line\" -ForegroundColor Cyan } else { Write-Host \"[CLOUDFLARE] $line\" } }" &
+
 timeout /t 3 /nobreak >nul
 
-:: 3. Watchdog'u başlat
 echo [3/3] Watchdog baslatiliyor...
-start "Watchdog" cmd /k "cd /d "%~dp0" && python watchdog.py"
+echo.
+echo ============================================
+echo   Tum servisler tek pencerede izleniyor
+echo   Kapatmak icin CTRL+C
+echo ============================================
+echo.
+
+:: Cloudflare logunu goster ve watchdog'u on planda calistir
+powershell -NoProfile -Command ^
+  "Set-Location '%~dp0'; " ^
+  "$cf = Start-Process -FilePath 'cloudflared' -ArgumentList 'tunnel','--url','tcp://localhost:1935' -NoNewWindow -PassThru -RedirectStandardError '%~dp0logs\cloudflare.log'; " ^
+  "Start-Sleep 3; " ^
+  "Write-Host ''; " ^
+  "Write-Host '[INFO] Cloudflare tunnel baslatildi. Log: logs\cloudflare.log' -ForegroundColor Yellow; " ^
+  "Write-Host '[INFO] RTMP Sunucu: http://localhost:8000 (HTTP Panel)' -ForegroundColor Green; " ^
+  "Write-Host ''; " ^
+  "python '%~dp0watchdog.py'"
 
 echo.
-echo Tum servisler baslatildi!
-echo.
-echo NOT: Cloudflare Tunnel penceresinden kameranin RTMP adresini kopyalayin.
-echo Ornek: rtmp://abc123.trycloudflare.com:1935/live/camera
-echo.
+echo Tum servisler durduruldu.
 pause
