@@ -1,7 +1,9 @@
 import subprocess
+import sys
 import time
 import logging
 import signal
+import threading
 from pathlib import Path
 
 logging.basicConfig(
@@ -18,7 +20,8 @@ CONFIG = {
     # Streamlabs RTMP adresi ve stream key
     # Twitch için: rtmp://live.twitch.tv/app/YOUR_STREAM_KEY
     # YouTube için: rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY
-    "streamlabs_url": "rtmp://live.twitch.tv/app/YOUR_STREAM_KEY",
+    # YOUR_STREAM_KEY yerine kendi stream key'ini gir
+    "streamlabs_url": "rtmp://live.twitch.tv/app/<YOUR_STREAM_KEY_HERE>",
 
     # Bağlantı kopunca gösterilecek fallback görsel
     "fallback_image": "fallback.jpg",
@@ -77,7 +80,7 @@ class Watchdog:
         self._live = StreamProcess("Canlı Yayın")
         self._fallback_proc = StreamProcess("Fallback")
         self._camera_online = False
-        self._running = True
+        self._stop_event = threading.Event()
 
     def _probe_camera(self) -> bool:
         """ffprobe ile kameranın RTMP stream'inin aktif olup olmadığını kontrol et."""
@@ -125,7 +128,7 @@ class Watchdog:
                 "-i", cfg["fallback_image"],
             ]
         else:
-            log.warning("fallback.jpg bulunamadı — siyah ekran kullanılıyor")
+            log.warning(f"'{cfg['fallback_image']}' bulunamadı — siyah ekran kullanılıyor")
             video_input = [
                 "-f", "lavfi",
                 "-i", f"color=c=black:s={cfg['width']}x{cfg['height']}:r={cfg['fps']}",
@@ -171,6 +174,10 @@ class Watchdog:
             log.warning("Fallback çöktü, yeniden başlatılıyor...")
             self._fallback_proc.start(self._fallback_cmd())
 
+    def request_stop(self):
+        """Watchdog döngüsünü güvenli şekilde durdur."""
+        self._stop_event.set()
+
     def run(self):
         log.info("🚀 Watchdog başlatıldı")
         log.info(f"   Kamera  : {self.cfg['camera_url']}")
@@ -178,14 +185,14 @@ class Watchdog:
         log.info("Kamera bağlantısı bekleniyor, fallback ekranı yayında...")
         self._fallback_proc.start(self._fallback_cmd())
 
-        while self._running:
+        while not self._stop_event.is_set():
             try:
                 if self._probe_camera():
                     self._switch_to_live()
                 else:
                     self._switch_to_fallback()
                 self._ensure_running()
-                time.sleep(self.cfg["probe_interval"])
+                self._stop_event.wait(timeout=self.cfg["probe_interval"])
             except KeyboardInterrupt:
                 break
 
@@ -197,8 +204,14 @@ class Watchdog:
 
 def main():
     wd = Watchdog(CONFIG)
-    signal.signal(signal.SIGINT, lambda s, f: setattr(wd, "_running", False))
-    signal.signal(signal.SIGTERM, lambda s, f: setattr(wd, "_running", False))
+
+    # Placeholder stream key kontrolü
+    if "<YOUR_STREAM_KEY_HERE>" in CONFIG["streamlabs_url"]:
+        log.error("❌ watchdog.py içindeki 'streamlabs_url' ayarına kendi stream key'ini girmeyi unutma!")
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, lambda s, f: wd.request_stop())
+    signal.signal(signal.SIGTERM, lambda s, f: wd.request_stop())
     wd.run()
 
 

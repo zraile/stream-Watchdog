@@ -70,15 +70,15 @@ Bu komut `fallback.jpg` dosyasını oluşturur. Kamera bağlantısı kesildiğin
 
 **Twitch için:**
 ```python
-"streamlabs_url": "rtmp://live.twitch.tv/app/YOUR_STREAM_KEY",
+"streamlabs_url": "rtmp://live.twitch.tv/app/<YOUR_STREAM_KEY_HERE>",
 ```
 
 **YouTube için:**
 ```python
-"streamlabs_url": "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY",
+"streamlabs_url": "rtmp://a.rtmp.youtube.com/live2/<YOUR_STREAM_KEY_HERE>",
 ```
 
-`YOUR_STREAM_KEY` yerine kendi stream key'ini yaz.
+`<YOUR_STREAM_KEY_HERE>` yerine kendi stream key'ini yaz.
 
 ## Kamera RTMP Ayarı
 
